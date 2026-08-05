@@ -22,6 +22,11 @@ and hides the completed week on Sunday.
 deployment. Trigger times use the Apps Script project timezone; date formatting
 uses `CONFIG.TIMEZONE`.
 
+The standalone entry points `flyproRun`, `mtRun`, and `accomRun` create only
+their named output for the next Monday. They are intended for selective manual
+runs or resends and must not lock the week, roll the template, or alter the
+Sunday cleanup properties.
+
 ## Important safety behavior
 
 - Keep `CONFIG.TEST_MODE` set to `true` while testing.

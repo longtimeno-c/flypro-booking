@@ -19,6 +19,23 @@ project timezone should be set to Europe/London.
 The Thursday run leaves the existing `FLYPRO` summary unchanged. The summary
 is rebuilt on Sunday after the previous week has been hidden.
 
+## Individual output runs
+
+The following functions target the next Monday's week tab and can be run
+independently from the Apps Script function menu:
+
+| Function | Action |
+| --- | --- |
+| `flyproRun` | Creates and delivers only the Flypro PDF/email. |
+| `mtRun` | Creates and delivers only the MT PDF/email. |
+| `accomRun` | Delivers only the accommodation email. |
+
+These runs use the configured `TEST_MODE` and `SEND_MODE` settings. They do
+not lock the week, roll the template forward, update Sunday cleanup state, or
+create the other outputs. The Flypro-only run updates the visible Flypro PDF
+link on the week tab. To schedule one independently, create an Apps Script
+installable trigger and select the relevant function as its event handler.
+
 After Thursday and Sunday processing, sheets are ordered as follows:
 
 1. TN template.
@@ -198,7 +215,8 @@ upcoming week remains on the summary tab.
 
 Run `setUpTriggers()` once to create or replace the Thursday, Friday, and Sunday
 triggers. After that, the scheduled triggers are the only entry points required
-for normal operation.
+for normal operation. Use `flyproRun`, `mtRun`, or `accomRun` manually when one
+output needs to be created or resent without running the other two.
 
 ## Important permissions
 

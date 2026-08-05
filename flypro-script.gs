@@ -116,6 +116,82 @@ function setUpTriggers() {
 /** Test on demand — same as the Thursday trigger. */
 // ============================================================ THURSDAY
 
+/** Publish only the Flypro PDF and email for the next Monday. */
+function flyproRun() {
+  try {
+    return flyproRunCore();
+  } catch (e) {
+    notifyFailure('Unexpected Flypro run error', e);
+    throw e;
+  }
+}
+
+function flyproRunCore() {
+  var target = loadTargetWeek('Flypro run');
+  if (!target) return;
+
+  assignDutyStudents(target.sh, target.week);
+  var warnings = preflightFor(target.week, 'FLYPRO');
+  if (stopForWarnings('Flypro run', warnings)) return;
+
+  var folder = pdfFolder();
+  var stamp = Utilities.formatDate(target.monday, CONFIG.TIMEZONE, 'yyyy-MM-dd');
+  var flypro = createFlyproPdf(folder, target.week, stamp);
+
+  deliver(CONFIG.FLYPRO_SUBJECT.replace('{week}', prettyDate(target.monday)),
+          flyproEmailBody(target.week), [flypro], CONFIG.FLYPRO_TO, 'FLYPRO');
+  writePdfLink(target.sh, flypro.getUrl());
+  Logger.log('Flypro output created for ' + target.tabName + '.');
+}
+
+/** Publish only the MT PDF and email for the next Monday. */
+function mtRun() {
+  try {
+    return mtRunCore();
+  } catch (e) {
+    notifyFailure('Unexpected MT run error', e);
+    throw e;
+  }
+}
+
+function mtRunCore() {
+  var target = loadTargetWeek('MT run');
+  if (!target) return;
+
+  var warnings = preflightFor(target.week, 'MT');
+  if (stopForWarnings('MT run', warnings)) return;
+
+  var folder = pdfFolder();
+  var stamp = Utilities.formatDate(target.monday, CONFIG.TIMEZONE, 'yyyy-MM-dd');
+  var mt = createMtPdf(folder, target.week, stamp);
+
+  deliver(CONFIG.MT_SUBJECT.replace('{week}', prettyDate(target.monday)),
+          mtEmailBody(target.week), [mt], CONFIG.MT_TO, 'MT');
+  Logger.log('MT output created for ' + target.tabName + '.');
+}
+
+/** Send only the accommodation email for the next Monday. */
+function accomRun() {
+  try {
+    return accomRunCore();
+  } catch (e) {
+    notifyFailure('Unexpected accommodation run error', e);
+    throw e;
+  }
+}
+
+function accomRunCore() {
+  var target = loadTargetWeek('Accommodation run');
+  if (!target) return;
+
+  var warnings = preflightFor(target.week, 'ACCOM');
+  if (stopForWarnings('Accommodation run', warnings)) return;
+
+  deliver(CONFIG.ACCOM_SUBJECT.replace('{week}', prettyDate(target.monday)),
+          accomEmailBody(target.week), [], CONFIG.ACCOM_TO, 'ACCOM');
+  Logger.log('Accommodation output created for ' + target.tabName + '.');
+}
+
 function thursdayRun() {
   try {
     return thursdayRunCore();
@@ -164,10 +240,8 @@ function thursdayRunCore() {
   var folder = pdfFolder();
   var stamp = Utilities.formatDate(monday, CONFIG.TIMEZONE, 'yyyy-MM-dd');
 
-  var flypro = shareAnyone(folder.createFile(
-    htmlToPdf(flyproHtml(week), 'OUAS Flypro WC ' + stamp)));
-  var mt = shareAnyone(folder.createFile(
-    htmlToPdf(mtHtml(week), 'OUAS MT Programme WC ' + stamp)));
+  var flypro = createFlyproPdf(folder, week, stamp);
+  var mt = createMtPdf(folder, week, stamp);
 
   var weekText = prettyDate(monday);
   deliver(CONFIG.FLYPRO_SUBJECT.replace('{week}', weekText),
@@ -194,6 +268,56 @@ function thursdayRunCore() {
   Logger.log('Sheet ordering complete.');
 
   Logger.log('Done. PDFs in: ' + folder.getUrl());
+}
+
+
+function loadTargetWeek(label) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var monday = nextMonday();
+  var tabName = weekTabName(monday);
+  var sh = ss.getSheetByName(tabName);
+
+  if (!sh) {
+    notifyFailure(label + ' could not start',
+                  'No tab named "' + tabName + '". Create it from the template, or check the naming.');
+    Logger.log('No tab named "' + tabName + '" - nothing to publish.');
+    return null;
+  }
+
+  if (!isNewFormat(sh)) {
+    notifyFailure(label + ' could not start',
+                  '"' + tabName + '" uses the old 2-column layout and cannot be published.');
+    Logger.log('"' + tabName + '" uses the old 2-column layout - cannot publish from it.');
+    return null;
+  }
+
+  return {
+    ss: ss,
+    monday: monday,
+    tabName: tabName,
+    sh: sh,
+    week: parseWeek(sh, monday)
+  };
+}
+
+function stopForWarnings(label, warnings) {
+  if (!warnings.length) return false;
+
+  var warningText = label + ' was stopped before creating output.\n\n' +
+                    warnings.map(function (w) { return '- ' + w; }).join('\n');
+  Logger.log('WARNINGS:\n  - ' + warnings.join('\n  - '));
+  notifyFailure('Pre-flight checks failed', warningText);
+  return true;
+}
+
+function createFlyproPdf(folder, week, stamp) {
+  return shareAnyone(folder.createFile(
+    htmlToPdf(flyproHtml(week), 'OUAS Flypro WC ' + stamp)));
+}
+
+function createMtPdf(folder, week, stamp) {
+  return shareAnyone(folder.createFile(
+    htmlToPdf(mtHtml(week), 'OUAS MT Programme WC ' + stamp)));
 }
 
 
@@ -322,21 +446,33 @@ function assignDutyStudents(sh, week) {
 // ============================================================ PRE-FLIGHT CHECKS
 
 function preflight(week) {
+  return preflightFor(week, 'ALL');
+}
+
+function preflightFor(week, scope) {
+  var all = scope === 'ALL';
+  var checkFlypro = all || scope === 'FLYPRO';
+  var checkMt = all || scope === 'MT';
+  var checkAccom = all || scope === 'ACCOM';
   var w = [];
   week.days.forEach(function (day) {
     var noFly = /no flying/i.test(day.availability);
 
-    if (!noFly && day.flying.length && !day.duty) {
+    if (checkFlypro && !noFly && day.flying.length && !day.duty) {
       w.push(day.name + ': people flying but no duty student could be chosen');
     }
-    day.accom.forEach(function (a) {
-      if (!a.rank) w.push(day.name + ': ' + a.surname + ' has no rank in the accom block');
-      if (!a.serviceNo) w.push(day.name + ': ' + a.surname + ' has no service number');
-    });
-    day.mt.forEach(function (m) {
-      if (!m.route) w.push(day.name + ': ' + m.surname + ' has an MT bid with no route');
-    });
-    if (!noFly) {
+    if (checkAccom) {
+      day.accom.forEach(function (a) {
+        if (!a.rank) w.push(day.name + ': ' + a.surname + ' has no rank in the accom block');
+        if (!a.serviceNo) w.push(day.name + ': ' + a.surname + ' has no service number');
+      });
+    }
+    if (checkMt) {
+      day.mt.forEach(function (m) {
+        if (!m.route) w.push(day.name + ': ' + m.surname + ' has an MT bid with no route');
+      });
+    }
+    if (checkFlypro && !noFly) {
       day.flying.forEach(function (f) {
         if (!f.sortie) w.push(day.name + ': ' + f.surname + ' has a flying bid with no sortie type');
       });
