@@ -6,7 +6,7 @@
  * Thursday 17:00   lock the closed week, roll the template forward, build the
  *                  Flypro and MT PDFs, and create three Gmail drafts
  * Friday  19:00    write the published PDF link into the week tab
- * Sunday  23:00    move the finished week tab to the archive spreadsheet
+ * Sunday  23:00    hide the finished week tab and leave the upcoming week visible
  *
  * The documents are drawn by this script — there are no template files to
  * upload or keep in sync.
@@ -15,7 +15,6 @@
  * FIRST RUN
  *   1. Fill in the CONFIG block below (emails can wait — TEST_MODE covers you)
  *   2. Save, WAIT for "Unsaved changes" to clear, then run  setUpTriggers
- *   3. To test without waiting for Thursday, run  runThursdayNow
  *
  * NEVER press Run while the editor says "Unsaved changes" — Apps Script will
  * execute the previously saved file with whatever function was selected then.
@@ -41,21 +40,31 @@ var CONFIG = {
   CC: 'ouas.flying@gmail.com',
   ERROR_TO: 'tphwoodlands@gmail.com',
 
-  SUBJECT: 'Flypro WC {week}',
+  FLYPRO_SUBJECT: 'Flypro WC {week}',
+  MT_SUBJECT: 'MT requests WC {week}',
+  ACCOM_SUBJECT: 'Accommodation requests WC {week}',
 
   // Signature. If set, this HTML is used in preference to Gmail's send-as
   // signature. Leave blank to read the saved Gmail signature automatically.
   USE_GMAIL_SIGNATURE: true,
-  SIGNATURE_HTML: '',
+  // Leave blank to use Gmail's default send-as identity. Gmail's API does not
+  // expose the separate Gmail signature names shown in Settings.
+  GMAIL_SIGNATURE_SEND_AS: '',
+  SIGNATURE_HTML: '<p style="margin:0">Kind regards,<br><br>' +
+                 'Tristan<br>' +
+                 'Officer Cadet Tristan Hill (RAFVR)<br>' +
+                 '2IC Flying<br>' +
+                 'Oxford University Air Squadron<br>' +
+                 'Tel: <a href="tel:+447720642810">07720 642810</a> | ' +
+                 'Email: <a href="mailto:retristan@pm.me">retristan@pm.me</a></p>',
 
   MET_TIME: '0830',          // met brief, shown on the Flypro document
   MT_MORNING: '0745',        // standard morning pickup
 
+  TN_TEMPLATE_TAB: 'TN TEMPLATE',
   TEMPLATE_TAB: '[TEMPLATE FLYPRO]',
 
-  // Leave blank and the script creates them on first run, then logs the IDs.
   PDF_FOLDER_ID: '11T3YqwBM2E2KCttDN09pqNAY-4_O3qkf',
-  ARCHIVE_SS_ID: '',
 
   TIMEZONE: 'Europe/London'
 };
@@ -78,10 +87,6 @@ var L = {
 };
 
 var NON_BID = ['no flying', 'no mt', 'tbc availability', 'surname', 'example', ''];
-
-/** The only sortie types. Applied to the template dropdown by applySortieList(). */
-var SORTIE_TYPES = ['Instructional', 'AEF', 'Famil'];
-
 
 // ============================================================ ENTRY POINTS
 
@@ -108,50 +113,19 @@ function setUpTriggers() {
  * Set the Sortie dropdown on the template (and any week tab that already exists)
  * to Instructional / AEF / Famil. Safe to run any time.
  */
-function applySortieList() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var rule = SpreadsheetApp.newDataValidation()
-    .requireValueInList(SORTIE_TYPES, true).setAllowInvalid(true).build();
-
-  ss.getSheets().forEach(function (sh) {
-    var n = sh.getName();
-    if (n !== CONFIG.TEMPLATE_TAB && n.indexOf('WC ') !== 0) return;
-    if (n.indexOf('old format') !== -1) return;
-
-    L.dayCol.forEach(function (c) {
-      sh.getRange(L.flyFirst, c + 1, L.flyLast - L.flyFirst + 1, 1).setDataValidation(rule);
-    });
-    Logger.log('Sortie list applied to ' + n);
-  });
-}
-
 /** Test on demand — same as the Thursday trigger. */
-function runThursdayNow() { thursdayRun(); }
-
-/**
- * Build the documents and drafts WITHOUT locking or rolling anything over.
- * While testing it re-seeds the week first — delete the seedTestWeek() line once
- * real bids are going into the sheet.
- */
-function previewOnly() {
-  seedTestWeek();
-  thursdayRun({ documentsOnly: true });
-}
-
-
 // ============================================================ THURSDAY
 
-function thursdayRun(opts) {
+function thursdayRun() {
   try {
-    return thursdayRunCore(opts);
+    return thursdayRunCore();
   } catch (e) {
     notifyFailure('Unexpected Thursday automation error', e);
     throw e;
   }
 }
 
-function thursdayRunCore(opts) {
-  opts = opts || {};
+function thursdayRunCore() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
 
   var monday = nextMonday();
@@ -195,27 +169,29 @@ function thursdayRunCore(opts) {
   var mt = shareAnyone(folder.createFile(
     htmlToPdf(mtHtml(week), 'OUAS MT Programme WC ' + stamp)));
 
-  var subject = CONFIG.SUBJECT.replace('{week}', prettyDate(monday));
-
-  deliver(subject, flyproEmailBody(week), [flypro], CONFIG.FLYPRO_TO, 'FLYPRO');
-  deliver(subject, mtEmailBody(week), [mt], CONFIG.MT_TO, 'MT');
-  deliver(subject, accomEmailBody(week), [], CONFIG.ACCOM_TO, 'ACCOM');
+  var weekText = prettyDate(monday);
+  deliver(CONFIG.FLYPRO_SUBJECT.replace('{week}', weekText),
+          flyproEmailBody(week), [flypro], CONFIG.FLYPRO_TO, 'FLYPRO');
+  deliver(CONFIG.MT_SUBJECT.replace('{week}', weekText),
+          mtEmailBody(week), [mt], CONFIG.MT_TO, 'MT');
+  deliver(CONFIG.ACCOM_SUBJECT.replace('{week}', weekText),
+          accomEmailBody(week), [], CONFIG.ACCOM_TO, 'ACCOM');
 
   // put the link on the week tab straight away, rather than waiting for Friday
   writePdfLink(sh, flypro.getUrl());
 
   var props = PropertiesService.getDocumentProperties();
-  props.setProperty('prevFlyproPdf', props.getProperty('lastFlyproPdf') || '')
-       .setProperty('lastFlyproPdf', flypro.getUrl())
+  props.setProperty('lastFlyproPdf', flypro.getUrl())
        .setProperty('lastWeekTab', tabName);
 
   // Leave the existing FLYPRO summary in place until Sunday. Sunday removes
   // the previous week and rebuilds the summary from the upcoming week.
 
-  if (!opts.documentsOnly) {
-    lockSheet(sh);
-    rollTemplateForward(ss, addDays(monday, 7));
-  }
+  lockSheet(sh);
+  rollTemplateForward(ss, addDays(monday, 7));
+  Logger.log('Ordering sheets...');
+  orderSheets(ss);
+  Logger.log('Sheet ordering complete.');
 
   Logger.log('Done. PDFs in: ' + folder.getUrl());
 }
@@ -237,7 +213,6 @@ function parseWeek(sh, monday) {
       dutyOverride: str(values[L.rowDuty - 1][c]),
       flying: [],
       reserves: [],
-      attending: [],                       // asterisk — coming but not flying
       mt: [],
       accom: []
     };
@@ -252,7 +227,6 @@ function parseWeek(sh, monday) {
       if (/reserve/i.test(sortie)) day.reserves.push(entry);
       else day.flying.push(entry);
 
-      if (p.asterisk) day.attending.push(entry);
     }
 
     for (var r2 = L.mtFirst - 1; r2 <= L.mtLast - 1; r2++) {
@@ -563,8 +537,9 @@ function deliver(subject, body, files, realTo, label) {
  * CONFIG.SIGNATURE_HTML is checked first; the Gmail signature is used only when
  * that setting is blank.
  *
- * Gmail only exposes the DEFAULT signature for each send-as address. If your OUAS
- * signature is not the default, paste its HTML into CONFIG.SIGNATURE_HTML.
+ * Gmail's userId remains "me" because that means the authenticated account.
+ * The API exposes signatures on send-as identities, not Gmail's separate
+ * signature names from the Settings page.
  */
 function signatureHtml() {
   // A configured signature is explicit and reliable, so prefer it to whichever
@@ -578,14 +553,38 @@ function signatureHtml() {
   if (CONFIG.USE_GMAIL_SIGNATURE) {
     try {
       var list = (Gmail.Users.Settings.SendAs.list('me').sendAs) || [];
-      var primary = null;
-      list.forEach(function (a) { if (a.isPrimary) primary = a; });
-      var found = (primary && primary.signature) ? primary.signature : '';
-      if (!found) {
-        list.forEach(function (a) { if (!found && a.signature) found = a.signature; });
+      var target = String(CONFIG.GMAIL_SIGNATURE_SEND_AS || '').trim().toLowerCase();
+      var selected = null;
+
+      if (target) {
+        list.forEach(function (a) {
+          var name = String(a.displayName || '').trim().toLowerCase();
+          var address = String(a.sendAsEmail || '').trim().toLowerCase();
+          if (!selected && (name === target || address === target ||
+                            name.indexOf(target) !== -1 || address.indexOf(target) !== -1)) {
+            selected = a;
+          }
+        });
       }
-      if (found) return found;
-      Logger.log('Gmail returned no signature and CONFIG.SIGNATURE_HTML is empty.');
+
+      if (!selected) {
+        list.forEach(function (a) { if (!selected && a.isDefault) selected = a; });
+      }
+      if (!selected) {
+        list.forEach(function (a) { if (!selected && a.isPrimary) selected = a; });
+      }
+      if (!selected) selected = list[0] || null;
+
+      if (selected && selected.signature) return selected.signature;
+      if (target && !selected) {
+        Logger.log('Gmail send-as "' + CONFIG.GMAIL_SIGNATURE_SEND_AS +
+                   '" was not found. Available entries: ' +
+                   list.map(function (a) {
+                     return [a.displayName, a.sendAsEmail].filter(String).join(' / ');
+                   }).join(', '));
+      } else {
+        Logger.log('Gmail send-as signature is empty and CONFIG.SIGNATURE_HTML is empty.');
+      }
     } catch (e) {
       Logger.log('Gmail advanced service not enabled (' + e + ') and CONFIG.SIGNATURE_HTML is empty.');
     }
@@ -593,19 +592,12 @@ function signatureHtml() {
   return '';
 }
 
-/** Prints the signature the script can see. Run this to check it found the right one. */
-function showSignature() {
-  var s = signatureHtml();
-  Logger.log(s ? 'Signature found:\n' + s : 'No signature found.');
-}
-
-
 // ============================================================ FRIDAY / SUNDAY
 
 // ============================================================ THE FLYPRO TAB
 /**
  * Rebuild the FLYPRO tab from the remaining week tabs. On Sunday the previous
- * week has been archived, so the upcoming week is left on the summary tab.
+ * week has been hidden, so the upcoming week is left on the summary tab.
  */
 function refreshFlyproSheet(ss, currentMonday) {
   var sh = ss.getSheetByName('FLYPRO');
@@ -616,24 +608,19 @@ function refreshFlyproSheet(ss, currentMonday) {
   sh.setHiddenGridlines(true);
   [90, 70, 300, 130, 300].forEach(function (w, i) { sh.setColumnWidth(i + 1, w); });
 
-  var props = PropertiesService.getDocumentProperties();
-  var row = 1;
+  var tab = ss.getSheetByName(weekTabName(currentMonday));
+  if (!tab) {
+    Logger.log('No upcoming week tab found for ' + weekTabName(currentMonday) + '.');
+    return;
+  }
+  if (!isNewFormat(tab)) {
+    Logger.log('Skipping ' + tab.getName() + ' — old 2-column layout.');
+    return;
+  }
 
-  [0, -7].forEach(function (offset) {
-    var monday = addDays(currentMonday, offset);
-    var tab = ss.getSheetByName(weekTabName(monday));
-    if (!tab) return;
-    if (!isNewFormat(tab)) {
-      Logger.log('Skipping ' + tab.getName() + ' — old 2-column layout.');
-      return;
-    }
-
-    var wk = parseWeek(tab, monday);
-    wk.days.forEach(function (d) { d.duty = d.dutyOverride; });
-
-    var url = props.getProperty(offset === 0 ? 'lastFlyproPdf' : 'prevFlyproPdf') || '';
-    row = drawProgramme(sh, row, wk, offset === 0, url) + 2;
-  });
+  var wk = parseWeek(tab, currentMonday);
+  wk.days.forEach(function (d) { d.duty = d.dutyOverride; });
+  drawProgramme(sh, 1, wk, '');
 
   Logger.log('FLYPRO tab rebuilt.');
 }
@@ -650,12 +637,11 @@ function isNewFormat(sh) {
 }
 
 /** Draw one week's programme onto the FLYPRO tab. Returns the last row used. */
-function drawProgramme(sh, top, week, isCurrent, pdfUrl) {
-  var title = (isCurrent ? 'THIS WEEK — ' : 'LAST WEEK — ') +
-              'OUAS FLYING PROGRAMME: ' + weekRangeLabel(week.monday);
+function drawProgramme(sh, top, week, pdfUrl) {
+  var title = 'THIS WEEK — OUAS FLYING PROGRAMME: ' + weekRangeLabel(week.monday);
 
   sh.getRange(top, 1, 1, 5).merge().setValue(title)
-    .setBackground(isCurrent ? '#1f3864' : '#7f7f7f')
+    .setBackground('#1f3864')
     .setFontColor('#ffffff').setFontWeight('bold').setFontSize(12)
     .setHorizontalAlignment('center').setVerticalAlignment('middle');
   sh.setRowHeight(top, 26);
@@ -762,7 +748,7 @@ function fridayRunCore() {
   Logger.log('Link confirmed on ' + tab + ', previous week cleared.');
 }
 
-/** Move the finished week tab into the archive spreadsheet. */
+/** Hide the finished week tab while keeping it recoverable in this spreadsheet. */
 function sundayRun() {
   try {
     return sundayRunCore();
@@ -775,24 +761,100 @@ function sundayRun() {
 function sundayRunCore() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var tab = PropertiesService.getDocumentProperties().getProperty('lastWeekTab');
-  if (!tab) { Logger.log('Nothing to archive.'); return; }
+  if (!tab) { Logger.log('Nothing to hide.'); return; }
 
   var sh = ss.getSheetByName(tab);
   if (!sh) { Logger.log('Tab ' + tab + ' already gone.'); return; }
 
-  var archive = archiveSpreadsheet();
-  sh.copyTo(archive).setName(tab);
-  ss.deleteSheet(sh);
-  Logger.log('Archived ' + tab + ' to ' + archive.getUrl());
+  var flypro = ss.getSheetByName('FLYPRO');
+  if (flypro) flypro.activate();
+  sh.hideSheet();
+  Logger.log('Hid completed week tab ' + tab + '.');
 
-  // rebuild FLYPRO — last week's tab has gone, so only this week remains
+  // Rebuild FLYPRO — the completed week is hidden, so the upcoming week remains
   refreshFlyproSheet(ss, nextMonday());
+  Logger.log('Ordering sheets...');
+  orderSheets(ss);
+  Logger.log('Sheet ordering complete.');
 }
 
 
 // ============================================================ SHEET HOUSEKEEPING
 
+/** Keep templates and live programme tabs in a predictable order. */
+function orderSheets(ss) {
+  var sheets = ss.getSheets();
+  var visibleSheets = sheets.filter(function (sh) { return !sh.isSheetHidden(); });
+  var ordered = [];
+  var used = {};
+
+  function add(sh) {
+    if (!sh || used[sh.getName()]) return;
+    used[sh.getName()] = true;
+    ordered.push(sh);
+  }
+
+  var tn = ss.getSheetByName(CONFIG.TN_TEMPLATE_TAB);
+  if (!tn) {
+    visibleSheets.forEach(function (sh) {
+      var n = sh.getName().toLowerCase();
+      if (!tn && /tn\s*template|template\s*tn/.test(n)) tn = sh;
+    });
+  }
+  add(tn);
+  add(ss.getSheetByName(CONFIG.TEMPLATE_TAB));
+  add(ss.getSheetByName('FLYPRO'));
+
+  var weeks = visibleSheets.filter(function (sh) { return /^WC\s+/i.test(sh.getName()); })
+    .map(function (sh) {
+      return { sheet: sh, locked: isSheetLocked(sh), date: weekDateValue(sh.getName()) };
+    });
+  weeks.sort(function (a, b) {
+    if (a.locked !== b.locked) return a.locked ? 1 : -1;
+    return b.date - a.date || a.sheet.getName().localeCompare(b.sheet.getName());
+  });
+  weeks.forEach(function (item) { add(item.sheet); });
+
+  // Preserve any unrelated tabs, but keep them after the managed tabs.
+  visibleSheets.forEach(add);
+
+  ordered.forEach(function (sh, i) {
+    if (sh.getIndex() === i + 1) return;
+    ss.setActiveSheet(sh);
+    ss.moveActiveSheet(i + 1);
+  });
+}
+
+function isSheetLocked(sh) {
+  return sh.getProtections(SpreadsheetApp.ProtectionType.SHEET).length > 0;
+}
+
+/** Returns a sortable date for a tab named like "WC 10th August". */
+function weekDateValue(name) {
+  var m = /^WC\s+(\d{1,2})(?:st|nd|rd|th)\s+([A-Za-z]+)/i.exec(name);
+  if (!m) return 0;
+
+  var months = ['january', 'february', 'march', 'april', 'may', 'june',
+                'july', 'august', 'september', 'october', 'november', 'december'];
+  var month = months.indexOf(m[2].toLowerCase());
+  if (month < 0) return 0;
+
+  var now = new Date();
+  var years = [now.getFullYear() - 1, now.getFullYear(), now.getFullYear() + 1];
+  var best = null, distance = Infinity;
+  years.forEach(function (year) {
+    var candidate = new Date(year, month, Number(m[1]));
+    var d = Math.abs(candidate.getTime() - now.getTime());
+    if (d < distance) { best = candidate.getTime(); distance = d; }
+  });
+  return best || 0;
+}
+
 function lockSheet(sh) {
+  if (isSheetLocked(sh)) {
+    Logger.log(sh.getName() + ' is already locked.');
+    return;
+  }
   var p = sh.protect().setDescription('Locked at the Thursday 1700 deadline');
   p.removeEditors(p.getEditors());
   Logger.log('Locked ' + sh.getName());
@@ -841,16 +903,6 @@ function pdfFolder() {
   return f;
 }
 
-function archiveSpreadsheet() {
-  if (CONFIG.ARCHIVE_SS_ID) return SpreadsheetApp.openById(CONFIG.ARCHIVE_SS_ID);
-  var it = DriveApp.getFilesByName('Flypro Archive');
-  var ss = it.hasNext() ? SpreadsheetApp.open(it.next())
-                        : SpreadsheetApp.create('Flypro Archive');
-  Logger.log('Archive spreadsheet id (put this in CONFIG): ' + ss.getId());
-  return ss;
-}
-
-
 // ============================================================ PDF / HTML
 
 function page(title, body) {
@@ -881,87 +933,6 @@ function htmlToPdf(html, name) {
 function esc(s) {
   return String(s === null || s === undefined ? '' : s)
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-}
-
-
-// ============================================================ TEST DATA
-/**
- * Build a realistic week tab from the upgraded template so the automation can be
- * dry-run. Any existing tab of the same name is renamed and hidden, not deleted.
- * Run this once, then run previewOnly.
- */
-function seedTestWeek() {
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var monday = nextMonday();
-  var name = weekTabName(monday);
-
-  var existing = ss.getSheetByName(name);
-  if (existing) {
-    var parked = name + ' (old format)';
-    if (ss.getSheetByName(parked)) ss.deleteSheet(ss.getSheetByName(parked));
-    existing.setName(parked);
-    existing.hideSheet();
-  }
-
-  var tpl = ss.getSheetByName(CONFIG.TEMPLATE_TAB);
-  if (!tpl) throw new Error('Template tab not found');
-  var sh = tpl.copyTo(ss).setName(name);
-  sh.getRange(L.rowDuty, 2, 1, 21).clearDataValidations();
-  ss.setActiveSheet(sh);
-  ss.moveActiveSheet(indexOfTemplate(ss) + 1);
-
-  // day index → { fly:[[surname, sortie]], mt:[[surname, route]], acc:[[rank, surname, no]] }
-  var data = {
-    1: {  // Tuesday
-      fly: [['Bristow', 'Instructional'], ['Ashmore', 'Instructional'],
-            ['Reed-Waller', 'Instructional'], ['Pun', 'AEF'],
-            ['Littlejohns', 'Famil'], ['Ward', 'AEF']],
-      mt: [['Penman', '1730 CHOLSEY → BENSON'], ['Knight*', '0745 THQ → BENSON']],
-      acc: [['Off Cdt', 'Bristow', '30452180'], ['APO', 'Ashmore', '30421677'],
-            ['APO', 'Darvell', '30444297']]
-    },
-    2: {  // Wednesday
-      fly: [['Bristow', 'Instructional'], ['Ashmore', 'Instructional'],
-            ['Penman', 'Famil'], ['Ward', 'AEF'],
-            ['Knight (AM only)', 'Instructional']],
-      mt: [['Penman', '1630 BENSON → THQ']],
-      acc: [['Off Cdt', 'Bristow', '30452180'], ['APO', 'Ashmore', '30421677'],
-            ['APO', 'Penman', '30404068']]
-    },
-    3: {  // Thursday
-      fly: [['Reed-Waller', 'Instructional'], ['Littlejohns', 'Instructional'],
-            ['Pun', 'AEF'], ['Elms', 'Famil']],
-      mt: [['Elms', '0745 BUCKS → BENSON']],
-      acc: [['Off Cdt', 'Littlejohns', '30444480'], ['Off Cdt', 'Elms', '30421670']]
-    },
-    4: {  // Friday
-      fly: [['Bristow', 'Instructional'], ['Penman', 'Instructional'],
-            ['Ward', 'AEF'], ['Knight', 'Instructional'], ['Coleman', 'Famil']],
-      mt: [['Coleman', '1630 BENSON → BUCKS'], ['Hooper', '1730 BUCKS → BENSON']],
-      acc: [['Off Cdt', 'Coleman', '30471688'], ['Off Cdt', 'Hooper', '30469686'],
-            ['APO', 'Penman', '30404068']]
-    }
-  };
-
-  Object.keys(data).forEach(function (k) {
-    var d = Number(k), col = L.dayCol[d], set = data[k];
-
-    set.fly.forEach(function (row, i) {
-      sh.getRange(L.flyFirst + i, col).setValue(row[0]);
-      sh.getRange(L.flyFirst + i, col + 1).setValue(row[1]);
-    });
-    set.mt.forEach(function (row, i) {
-      sh.getRange(L.mtFirst + i, col).setValue(row[0]);
-      sh.getRange(L.mtFirst + i, col + 1).setValue(row[1]);
-    });
-    set.acc.forEach(function (row, i) {
-      sh.getRange(L.accFirst + i, col, 1, 3).setValues([row]);
-    });
-  });
-
-  applySortieList();
-  SpreadsheetApp.flush();
-  Logger.log('Seeded "' + name + '". Now run previewOnly.');
 }
 
 

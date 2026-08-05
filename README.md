@@ -3,7 +3,7 @@
 `flypro-script.gs` is a Google Apps Script for a Google Spreadsheet. It reads
 the weekly flying, MT, duty-student, and accommodation entries; creates the
 Flypro and MT PDFs; creates or sends three emails; maintains the `FLYPRO`
-summary tab; and archives the completed week.
+summary tab; and hides the completed week.
 
 ## Weekly schedule
 
@@ -14,10 +14,19 @@ project timezone should be set to Europe/London.
 | --- | --- | --- |
 | Thursday 17:00 | `thursdayRun` | Validate the week, create PDFs, create/send emails, add the PDF link, lock the week, and create the next template tab. |
 | Friday 19:00 | `fridayRun` | Confirm the PDF link and remove the previous link. |
-| Sunday 23:00 | `sundayRun` | Copy the previous week to the archive, delete it from the active spreadsheet, and rebuild `FLYPRO` so the upcoming week remains. |
+| Sunday 23:00 | `sundayRun` | Hide the previous week in the active spreadsheet and rebuild `FLYPRO` so the upcoming week remains. |
 
 The Thursday run leaves the existing `FLYPRO` summary unchanged. The summary
-is rebuilt on Sunday after the previous week has been archived/deleted.
+is rebuilt on Sunday after the previous week has been hidden.
+
+After Thursday and Sunday processing, sheets are ordered as follows:
+
+1. TN template.
+2. Flypro template.
+3. `FLYPRO` summary.
+4. Unlocked `WC` tabs, furthest week to soonest week.
+5. Locked `WC` tabs.
+6. Any unrelated tabs.
 
 ## Configuration
 
@@ -31,14 +40,17 @@ The `CONFIG` object at the top of `flypro-script.gs` contains:
 - `ACCOM_TO`: accommodation recipient.
 - `CC`: copied on normal emails when test mode is disabled.
 - `ERROR_TO`: urgent failure recipient, currently `tphwoodlands@gmail.com`.
-- `SUBJECT`: normal email subject template, currently `Flypro WC {week}`.
-- `SIGNATURE_HTML`: optional explicit HTML signature.
-- `USE_GMAIL_SIGNATURE`: if enabled and `SIGNATURE_HTML` is blank, read the Gmail default signature.
+- `FLYPRO_SUBJECT`: Flypro email subject, currently `Flypro WC {week}`.
+- `MT_SUBJECT`: MT email subject, currently `MT requests WC {week}`.
+- `ACCOM_SUBJECT`: accommodation email subject, currently `Accommodation requests WC {week}`.
+- `SIGNATURE_HTML`: explicit OUAS HTML signature used by the emails.
+- `USE_GMAIL_SIGNATURE`: if enabled and `SIGNATURE_HTML` is blank, read the configured Gmail send-as signature.
+- `GMAIL_SIGNATURE_SEND_AS`: optional Gmail send-as display name or email address. Leave blank to use Gmail's default send-as identity.
 - `MET_TIME`: MET time shown on the Flypro document.
 - `MT_MORNING`: morning requirement shown on the MT document.
+- `TN_TEMPLATE_TAB`: name of the nominal-roll/TN template tab.
 - `TEMPLATE_TAB`: name of the weekly template tab.
 - `PDF_FOLDER_ID`: Drive folder used for generated PDFs.
-- `ARCHIVE_SS_ID`: optional archive spreadsheet ID. If blank, a spreadsheet named `Flypro Archive` is found or created.
 - `TIMEZONE`: date and time formatting timezone.
 
 The safe initial settings are:
@@ -106,6 +118,10 @@ It then:
 10. Locks the completed week tab.
 11. Copies the template forward to create the next week tab.
 
+Locking is idempotent: an already-protected week is not protected again. A
+manual rerun can still create duplicate PDFs or drafts, so rerun Thursday only
+when those duplicate outputs are acceptable.
+
 The Flypro PDF covers Monday-Friday and contains MET, sorties, duty student,
 and MT information. The MT PDF contains weekday transport columns and route
 requests. The accommodation email contains dates, ranks, names, and service
@@ -113,10 +129,12 @@ numbers but has no attachment.
 
 ## Email behavior
 
-Normal email subjects use the configured template. For example:
+The three emails use separate configured subjects. For example:
 
 ```text
 Flypro WC 10th August 2026
+MT requests WC 10th August 2026
+Accommodation requests WC 10th August 2026
 ```
 
 Test drafts are prefixed with `[TEST]`.
@@ -131,7 +149,14 @@ Please find attached the PSB flypro WC 10th August 2026.
 ```
 
 The configured signature is appended as HTML. `CONFIG.SIGNATURE_HTML` takes
-priority over Gmail. `showSignature()` logs the signature the script can see.
+priority over Gmail. Otherwise, the script selects the configured send-as
+identity, or Gmail's default send-as identity when the setting is blank.
+
+Gmail's API does not expose the separate signature names shown in Gmail
+Settings. To use the signature named `OUAS`, set it as the default signature
+for new emails for the relevant send-as address in Gmail. Alternatively, paste
+the OUAS signature HTML into `CONFIG.SIGNATURE_HTML` for an exact, explicit
+selection.
 
 ## Failure and validation behavior
 
@@ -165,21 +190,15 @@ only log that the failure alert could not be sent.
 Friday confirms the Flypro PDF link on the published week tab and clears the
 previous week’s link.
 
-Sunday copies the published week tab into the archive spreadsheet, deletes the
-copy from the active spreadsheet, and rebuilds `FLYPRO`. Because the previous
-week has been removed, the upcoming week remains on the summary tab.
+Sunday hides the published week tab in the active spreadsheet and rebuilds
+`FLYPRO`. The hidden tab stays recoverable in the same spreadsheet while the
+upcoming week remains on the summary tab.
 
-## Manual and test functions
+## Initial setup
 
-- `runThursdayNow()`: run the normal Thursday process immediately.
-- `previewOnly()`: seed test data and create documents/drafts without locking or rolling the sheet forward.
-- `seedTestWeek()`: create a realistic test week from the template.
-- `applySortieList()`: apply the `Instructional`, `AEF`, and `Famil` dropdown values.
-- `showSignature()`: log the detected/configured signature.
-- `setUpTriggers()`: create or replace the Thursday, Friday, and Sunday triggers.
-
-`seedTestWeek()` renames an existing same-named test week to an `(old format)`
-tab and hides it. Use it only for testing, not after real bids have been entered.
+Run `setUpTriggers()` once to create or replace the Thursday, Friday, and Sunday
+triggers. After that, the scheduled triggers are the only entry points required
+for normal operation.
 
 ## Important permissions
 
