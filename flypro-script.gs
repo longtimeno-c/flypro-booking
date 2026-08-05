@@ -35,16 +35,15 @@ var CONFIG = {
   SEND_MODE: 'DRAFT',
 
   // Real distribution lists. Ignored while TEST_MODE is true.
-  FLYPRO_TO: '',
-  MT_TO: '',
-  ACCOM_TO: '',
-  CC: '',
+  FLYPRO_TO: 'Eleanor.Hoogewerf845@mod.gov.uk,Andrew.Ouellette617@mod.gov.uk,simon.bowes391@mod.gov.uk,Andrew.Jones834@mod.gov.uk,James.Bellward100@mod.gov.uk,mark.doney511@mod.gov.uk,6fts-ouas-ops@mod.gov.uk,steve.pipa100@mod.gov.uk,Stephen.jones@babcockinternational.com',
+  MT_TO: 'Stephen.jones@babcockinternational.com,Andrew.Jones834@mod.gov.uk,steve.pipa100@mod.gov.uk,mark.doney511@mod.gov.uk,sean.wheeler@babcockinternational.com',
+  ACCOM_TO: 'BEN-AccomBooking-WOSM-OM@mod.gov.uk',
+  CC: 'ouas.flying@gmail.com',
 
-  SUBJECT: 'PSB flypro for WC commencing {week}',
+  SUBJECT: 'Flypro WC {week}',
 
-  // Signature. The script reads your saved Gmail signature automatically.
-  // If Gmail returns nothing (or the wrong one), paste the HTML here instead and
-  // it will be used in preference to nothing.
+  // Signature. If set, this HTML is used in preference to Gmail's send-as
+  // signature. Leave blank to read the saved Gmail signature automatically.
   USE_GMAIL_SIGNATURE: true,
   SIGNATURE_HTML: '',
 
@@ -446,18 +445,21 @@ function mtHtml(week) {
 // ============================================================ EMAIL BODIES
 
 function flyproEmailBody(week) {
-  return 'Flying programme for the week commencing ' + prettyDate(week.monday) +
-         ' is attached.\n\nMET brief ' + CONFIG.MET_TIME + '.\n';
+  return emailGreeting() + '\n\n' +
+         'Please find attached the PSB flypro WC ' + prettyDate(week.monday) +
+         '.\n';
 }
 
 function mtEmailBody(week) {
-  return 'MT programme for the week commencing ' + prettyDate(week.monday) +
-         ' is attached.\n\nMorning requirement is ' + CONFIG.MT_MORNING + '.\n';
+  return emailGreeting() + '\n\n' +
+         'Please find attached the MT programme for the week commencing ' +
+         prettyDate(week.monday) + '.\n';
 }
 
 /** Accommodation is a plain email, no attachment — dates, ranks, numbers, names. */
 function accomEmailBody(week) {
-  var out = ['Accommodation required for the week commencing ' +
+  var out = [emailGreeting(), '',
+             'Please could you arrange accommodation for the week commencing ' +
              prettyDate(week.monday) + ':', ''];
   var any = false;
 
@@ -472,8 +474,16 @@ function accomEmailBody(week) {
     out.push('');
   });
 
-  if (!any) out.push('No accommodation requested this week.');
+  if (!any) out.push('There are no accommodation requests this week.');
   return out.join('\n');
+}
+
+/** Uses a friendly greeting appropriate to the time the email is created. */
+function emailGreeting() {
+  var hour = Number(Utilities.formatDate(new Date(), CONFIG.TIMEZONE, 'H'));
+  if (hour < 12) return 'Good morning all,';
+  if (hour < 18) return 'Good afternoon all,';
+  return 'Good evening all,';
 }
 
 
@@ -494,7 +504,7 @@ function deliver(subject, body, files, realTo, label) {
   if (files.length) opts.attachments = files.map(function (f) { return f.getAs('application/pdf'); });
 
   var prefix = CONFIG.TEST_MODE ? '[TEST] ' : '';
-  var full = prefix + '[' + label + '] ' + subject;
+  var full = prefix + subject;
 
   if (CONFIG.SEND_MODE === 'SEND') {
     GmailApp.sendEmail(to, full, body, opts);
@@ -509,13 +519,21 @@ function deliver(subject, body, files, realTo, label) {
  * Your saved Gmail signature.
  *
  * Needs the Gmail advanced service: in the editor, Services (+) → Gmail API → Add.
- * Without it this falls back to CONFIG.SIGNATURE_HTML.
+ * CONFIG.SIGNATURE_HTML is checked first; the Gmail signature is used only when
+ * that setting is blank.
  *
  * Gmail only exposes the DEFAULT signature for each send-as address. If your OUAS
- * signature is not the default, either make it the default for new emails, or paste
- * its HTML into CONFIG.SIGNATURE_HTML.
+ * signature is not the default, paste its HTML into CONFIG.SIGNATURE_HTML.
  */
 function signatureHtml() {
+  // A configured signature is explicit and reliable, so prefer it to whichever
+  // Gmail send-as signature happens to be exposed by the API.
+  var configured = String(CONFIG.SIGNATURE_HTML || '').trim();
+  if (configured) {
+    Logger.log('Using CONFIG.SIGNATURE_HTML.');
+    return configured;
+  }
+
   if (CONFIG.USE_GMAIL_SIGNATURE) {
     try {
       var list = (Gmail.Users.Settings.SendAs.list('me').sendAs) || [];
@@ -526,12 +544,12 @@ function signatureHtml() {
         list.forEach(function (a) { if (!found && a.signature) found = a.signature; });
       }
       if (found) return found;
-      Logger.log('Gmail returned no signature — falling back to CONFIG.SIGNATURE_HTML.');
+      Logger.log('Gmail returned no signature and CONFIG.SIGNATURE_HTML is empty.');
     } catch (e) {
-      Logger.log('Gmail advanced service not enabled (' + e + ') — using CONFIG.SIGNATURE_HTML.');
+      Logger.log('Gmail advanced service not enabled (' + e + ') and CONFIG.SIGNATURE_HTML is empty.');
     }
   }
-  return CONFIG.SIGNATURE_HTML || '';
+  return '';
 }
 
 /** Prints the signature the script can see. Run this to check it found the right one. */
