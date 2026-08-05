@@ -39,6 +39,7 @@ var CONFIG = {
   MT_TO: 'Stephen.jones@babcockinternational.com,Andrew.Jones834@mod.gov.uk,steve.pipa100@mod.gov.uk,mark.doney511@mod.gov.uk,sean.wheeler@babcockinternational.com',
   ACCOM_TO: 'BEN-AccomBooking-WOSM-OM@mod.gov.uk',
   CC: 'ouas.flying@gmail.com',
+  ERROR_TO: 'tphwoodlands@gmail.com',
 
   SUBJECT: 'Flypro WC {week}',
 
@@ -141,6 +142,15 @@ function previewOnly() {
 // ============================================================ THURSDAY
 
 function thursdayRun(opts) {
+  try {
+    return thursdayRunCore(opts);
+  } catch (e) {
+    notifyFailure('Unexpected Thursday automation error', e);
+    throw e;
+  }
+}
+
+function thursdayRunCore(opts) {
   opts = opts || {};
   var ss = SpreadsheetApp.getActiveSpreadsheet();
 
@@ -149,12 +159,16 @@ function thursdayRun(opts) {
   var sh = ss.getSheetByName(tabName);
 
   if (!sh) {
+    notifyFailure('Thursday run could not start',
+                  'No tab named "' + tabName + '". Create it from the template, or check the naming.');
     Logger.log('No tab named "' + tabName + '" — nothing to publish. ' +
                'Create it from the template, or check the naming.');
     return;
   }
 
   if (!isNewFormat(sh)) {
+    notifyFailure('Thursday run could not start',
+                  '"' + tabName + '" uses the old 2-column layout and cannot be published.');
     Logger.log('"' + tabName + '" is the old 2-column layout — cannot publish from it. ' +
                'Create the week from the upgraded template.');
     return;
@@ -164,7 +178,14 @@ function thursdayRun(opts) {
   assignDutyStudents(sh, week);
 
   var warnings = preflight(week);
-  if (warnings.length) Logger.log('WARNINGS:\n  - ' + warnings.join('\n  - '));
+  if (warnings.length) {
+    var warningText = 'The Thursday run was stopped before creating PDFs, emails, or ' +
+                      'locking/rolling sheets.\n\n' +
+                      warnings.map(function (w) { return '- ' + w; }).join('\n');
+    Logger.log('WARNINGS:\n  - ' + warnings.join('\n  - '));
+    notifyFailure('Pre-flight checks failed', warningText);
+    return;
+  }
 
   var folder = pdfFolder();
   var stamp = Utilities.formatDate(monday, CONFIG.TIMEZONE, 'yyyy-MM-dd');
@@ -188,8 +209,8 @@ function thursdayRun(opts) {
        .setProperty('lastFlyproPdf', flypro.getUrl())
        .setProperty('lastWeekTab', tabName);
 
-  // publish onto the FLYPRO tab — this week plus last week
-  refreshFlyproSheet(ss, monday);
+  // Leave the existing FLYPRO summary in place until Sunday. Sunday removes
+  // the previous week and rebuilds the summary from the upcoming week.
 
   if (!opts.documentsOnly) {
     lockSheet(sh);
@@ -329,9 +350,9 @@ function assignDutyStudents(sh, week) {
 function preflight(week) {
   var w = [];
   week.days.forEach(function (day) {
-    if (/no flying/i.test(day.availability)) return;
+    var noFly = /no flying/i.test(day.availability);
 
-    if (day.flying.length && !day.duty) {
+    if (!noFly && day.flying.length && !day.duty) {
       w.push(day.name + ': people flying but no duty student could be chosen');
     }
     day.accom.forEach(function (a) {
@@ -341,11 +362,31 @@ function preflight(week) {
     day.mt.forEach(function (m) {
       if (!m.route) w.push(day.name + ': ' + m.surname + ' has an MT bid with no route');
     });
-    day.flying.forEach(function (f) {
-      if (!f.sortie) w.push(day.name + ': ' + f.surname + ' has a flying bid with no sortie type');
-    });
+    if (!noFly) {
+      day.flying.forEach(function (f) {
+        if (!f.sortie) w.push(day.name + ': ' + f.surname + ' has a flying bid with no sortie type');
+      });
+    }
   });
   return w;
+}
+
+/** Sends a real failure alert, even when normal delivery is in test/draft mode. */
+function notifyFailure(title, details) {
+  var detail = details && details.stack ? details.stack : String(details || 'No details available.');
+  var body = 'The OUAS Flypro automation has stopped and requires attention.\n\n' +
+             title + '\n\n' + detail + '\n\n' +
+             'Time: ' + Utilities.formatDate(new Date(), CONFIG.TIMEZONE, 'yyyy-MM-dd HH:mm') +
+             '\nSpreadsheet: ' + SpreadsheetApp.getActiveSpreadsheet().getUrl();
+
+  try {
+    GmailApp.sendEmail(CONFIG.ERROR_TO, '[URGENT] OUAS Flypro automation stopped', body, {
+      name: 'OUAS Flypro'
+    });
+    Logger.log('Failure alert sent to ' + CONFIG.ERROR_TO);
+  } catch (e) {
+    Logger.log('Could not send failure alert: ' + e);
+  }
 }
 
 
@@ -563,10 +604,8 @@ function showSignature() {
 
 // ============================================================ THE FLYPRO TAB
 /**
- * Rebuild the FLYPRO tab: this week's published programme at the top, last week's
- * underneath. Rebuilt from the week tabs themselves, so there is no stored state to
- * go stale. On Sunday the old week tab is archived and this is rebuilt, which leaves
- * only the current week.
+ * Rebuild the FLYPRO tab from the remaining week tabs. On Sunday the previous
+ * week has been archived, so the upcoming week is left on the summary tab.
  */
 function refreshFlyproSheet(ss, currentMonday) {
   var sh = ss.getSheetByName('FLYPRO');
@@ -694,6 +733,15 @@ function writePdfLink(sh, url) {
 
 /** Friday: make sure this week's link is there, and remove last week's. */
 function fridayRun() {
+  try {
+    return fridayRunCore();
+  } catch (e) {
+    notifyFailure('Unexpected Friday automation error', e);
+    throw e;
+  }
+}
+
+function fridayRunCore() {
   var props = PropertiesService.getDocumentProperties();
   var url = props.getProperty('lastFlyproPdf');
   var tab = props.getProperty('lastWeekTab');
@@ -716,6 +764,15 @@ function fridayRun() {
 
 /** Move the finished week tab into the archive spreadsheet. */
 function sundayRun() {
+  try {
+    return sundayRunCore();
+  } catch (e) {
+    notifyFailure('Unexpected Sunday automation error', e);
+    throw e;
+  }
+}
+
+function sundayRunCore() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
   var tab = PropertiesService.getDocumentProperties().getProperty('lastWeekTab');
   if (!tab) { Logger.log('Nothing to archive.'); return; }
