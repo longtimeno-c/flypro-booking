@@ -14,11 +14,11 @@ and hides the completed week on Sunday.
 ## Scheduled workflow
 
 - Thursday 17:00: `thursdayRun` validates and publishes the week.
-- Friday 19:00: `fridayRun` confirms the published PDF link.
 - Sunday 23:00: `sundayRun` hides the previous week and rebuilds the
   `FLYPRO` summary with the upcoming week.
 
-`setUpTriggers()` creates these three triggers and should be run once after
+`setUpTriggers()` creates the Thursday and Sunday triggers, removes the legacy
+Friday trigger, and should be run once after
 deployment. Trigger times use the Apps Script project timezone; date formatting
 uses `CONFIG.TIMEZONE`.
 

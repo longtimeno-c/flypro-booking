@@ -3,10 +3,9 @@
  * OUAS FLYPRO — WEEKLY AUTOMATION
  * ============================================================================
  *
- * Thursday 17:00   lock the closed week, roll the template forward, build the
- *                  Flypro and MT PDFs, and create three Gmail drafts
- * Friday  19:00    write the published PDF link into the week tab
- * Sunday  23:00    hide the finished week tab and leave the upcoming week visible
+ * Thursday 17:00   publish and lock the coming week, then prepare the next two
+ *                  editable weeks and rebuild the FLYPRO summary
+ * Sunday  23:00    hide the week that has ended and leave the coming week visible
  *
  * The documents are drawn by this script — there are no template files to
  * upload or keep in sync.
@@ -26,7 +25,7 @@
 
 var CONFIG = {
   // While true, all three drafts go to TEST_RECIPIENT and nowhere else.
-  TEST_MODE: true,
+  TEST_MODE: false,
   TEST_RECIPIENT: 'tphwoodlands@gmail.com',
 
   // Normal distribution messages are always created as Gmail drafts. This
@@ -91,7 +90,7 @@ var NON_BID = ['no flying', 'no mt', 'tbc availability', 'surname', 'example', '
 
 // ============================================================ ENTRY POINTS
 
-/** Create the three time-driven triggers. Run once. */
+/** Create the Thursday and Sunday time-driven triggers. Run once. */
 function setUpTriggers() {
   ScriptApp.getProjectTriggers().forEach(function (t) {
     var f = t.getHandlerFunction();
@@ -102,12 +101,10 @@ function setUpTriggers() {
 
   ScriptApp.newTrigger('thursdayRun').timeBased()
     .onWeekDay(ScriptApp.WeekDay.THURSDAY).atHour(17).nearMinute(0).create();
-  ScriptApp.newTrigger('fridayRun').timeBased()
-    .onWeekDay(ScriptApp.WeekDay.FRIDAY).atHour(19).nearMinute(0).create();
   ScriptApp.newTrigger('sundayRun').timeBased()
     .onWeekDay(ScriptApp.WeekDay.SUNDAY).atHour(23).nearMinute(0).create();
 
-  Logger.log('Triggers created: Thursday 17:00, Friday 19:00, Sunday 23:00.');
+  Logger.log('Triggers created: Thursday 17:00 and Sunday 23:00. Removed any legacy Friday trigger.');
 }
 
 /**
@@ -252,7 +249,7 @@ function thursdayRunCore() {
           accomEmailBody(week), [], CONFIG.ACCOM_TO, 'ACCOM');
   notifyFlyproReady(week, flypro, mt);
 
-  // put the link on the week tab straight away, rather than waiting for Friday
+  // Put the link on the week tab as part of the Thursday publication.
   writePdfLink(sh, flypro.getUrl());
 
   var props = PropertiesService.getDocumentProperties();
@@ -879,37 +876,6 @@ function writePdfLink(sh, url) {
   sh.getRange(row, 2)
     .setFormula('=HYPERLINK("' + url + '","Published Flypro PDF")')
     .setFontColor('#1155cc');
-}
-
-/** Friday: make sure this week's link is there, and remove last week's. */
-function fridayRun() {
-  try {
-    return fridayRunCore();
-  } catch (e) {
-    notifyFailure('Unexpected Friday automation error', e);
-    throw e;
-  }
-}
-
-function fridayRunCore() {
-  var props = PropertiesService.getDocumentProperties();
-  var url = props.getProperty('lastFlyproPdf');
-  var tab = props.getProperty('lastWeekTab');
-  if (!url || !tab) { Logger.log('Nothing published this week.'); return; }
-
-  var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var sh = ss.getSheetByName(tab);
-  if (!sh) { Logger.log('Tab ' + tab + ' has gone.'); return; }
-
-  var prev = props.getProperty('previousLinkTab');
-  if (prev && prev !== tab) {
-    var ps = ss.getSheetByName(prev);
-    if (ps) ps.getRange(L.accLast + 2, 1, 1, 2).clearContent();
-  }
-
-  writePdfLink(sh, url);
-  props.setProperty('previousLinkTab', tab);
-  Logger.log('Link confirmed on ' + tab + ', previous week cleared.');
 }
 
 /** Hide the week that has ended while keeping it recoverable in this spreadsheet. */

@@ -13,7 +13,6 @@ project timezone should be set to Europe/London.
 | Time | Function | Action |
 | --- | --- | --- |
 | Thursday 17:00 | `thursdayRun` | Validate the coming week, create PDFs, create/send emails, add the PDF link, lock that week, ensure the following two week tabs are unlocked, and show the current plus coming week in `FLYPRO`. |
-| Friday 19:00 | `fridayRun` | Confirm the PDF link and remove the previous link. |
 | Sunday 23:00 | `sundayRun` | Hide the week that has just ended and rebuild `FLYPRO` for the week beginning the next day. |
 
 The Thursday run rebuilds `FLYPRO` to show both the current week and the coming
@@ -221,16 +220,13 @@ When a check fails, the script:
 - Does not lock the week tab.
 - Does not roll the template forward.
 
-Unexpected Thursday, Friday, or Sunday errors are also emailed to `ERROR_TO`
+Unexpected Thursday or Sunday errors are also emailed to `ERROR_TO`
 and then re-thrown so they remain visible in Apps Script execution logs. Failure
 alerts bypass normal test/draft delivery settings because they are intended to
 request immediate attention. If Gmail itself is unavailable, the script can
 only log that the failure alert could not be sent.
 
-## Friday and Sunday processing
-
-Friday confirms the Flypro PDF link on the published week tab and clears the
-previous week’s link.
+## Sunday processing
 
 Sunday hides the week that has just ended, rather than the week published on
 Thursday, and rebuilds `FLYPRO` for the Monday that follows. The hidden tab
@@ -238,10 +234,11 @@ stays recoverable in the same spreadsheet.
 
 ## Initial setup
 
-Run `setUpTriggers()` once to create or replace the Thursday, Friday, and Sunday
-triggers. After that, the scheduled triggers are the only entry points required
-for normal operation. Use `flyproRun`, `mtRun`, or `accomRun` manually when one
-output needs to be created or resent without running the other two.
+Run `setUpTriggers()` once to create or replace the Thursday and Sunday
+triggers. It also removes the legacy Friday trigger. After that, the scheduled
+triggers are the only entry points required for normal operation. Use
+`flyproRun`, `mtRun`, or `accomRun` manually when one output needs to be created
+or resent without running the other two.
 
 ## Important permissions
 
