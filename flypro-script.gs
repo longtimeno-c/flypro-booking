@@ -29,8 +29,8 @@ var CONFIG = {
   TEST_MODE: true,
   TEST_RECIPIENT: 'tphwoodlands@gmail.com',
 
-  // DRAFT = create Gmail drafts for review.  SEND = send automatically.
-  // Leave on DRAFT until you have watched it be right for a few weeks.
+  // Normal distribution messages are always created as Gmail drafts. This
+  // setting is retained for visibility, but SEND is intentionally disabled.
   SEND_MODE: 'DRAFT',
 
   // Real distribution lists. Ignored while TEST_MODE is true.
@@ -39,10 +39,12 @@ var CONFIG = {
   ACCOM_TO: 'BEN-AccomBooking-WOSM-OM@mod.gov.uk',
   CC: 'ouas.flying@gmail.com',
   ERROR_TO: 'tphwoodlands@gmail.com',
+  READY_TO: 'tphwoodlands@gmail.com,aaryan.malik000@gmail.com',
 
   FLYPRO_SUBJECT: 'Flypro WC {week}',
   MT_SUBJECT: 'MT requests WC {week}',
   ACCOM_SUBJECT: 'Accommodation requests WC {week}',
+  READY_SUBJECT: 'Flypro ready for review WC {week}',
 
   // Signature. If set, this HTML is used in preference to Gmail's send-as
   // signature. Leave blank to read the saved Gmail signature automatically.
@@ -78,7 +80,6 @@ var L = {
   dayCol: [2, 5, 8, 11, 14, 17, 20],          // B E H K N Q T
   dayName: ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'],
 
-  rowAvail: 2,
   rowDuty: 3,
 
   flyFirst: 5, flyLast: 12,      // Surname in dayCol, Sortie in dayCol+1
@@ -226,7 +227,6 @@ function thursdayRunCore() {
 
   var week = parseWeek(sh, monday);
   assignDutyStudents(sh, week);
-
   var warnings = preflight(week);
   if (warnings.length) {
     var warningText = 'The Thursday run was stopped before creating PDFs, emails, or ' +
@@ -250,19 +250,22 @@ function thursdayRunCore() {
           mtEmailBody(week), [mt], CONFIG.MT_TO, 'MT');
   deliver(CONFIG.ACCOM_SUBJECT.replace('{week}', weekText),
           accomEmailBody(week), [], CONFIG.ACCOM_TO, 'ACCOM');
+  notifyFlyproReady(week, flypro, mt);
 
   // put the link on the week tab straight away, rather than waiting for Friday
   writePdfLink(sh, flypro.getUrl());
 
   var props = PropertiesService.getDocumentProperties();
   props.setProperty('lastFlyproPdf', flypro.getUrl())
-       .setProperty('lastWeekTab', tabName);
+       .setProperty('lastWeekTab', tabName)
+       .setProperty('weekToHideTab', weekTabName(addDays(monday, -7)));
 
-  // Leave the existing FLYPRO summary in place until Sunday. Sunday removes
-  // the previous week and rebuilds the summary from the upcoming week.
+  // Rebuild FLYPRO after publication so the current and coming weeks are both
+  // visible until Sunday hides the week that has ended.
 
   lockSheet(sh);
-  rollTemplateForward(ss, addDays(monday, 7));
+  ensureFutureWeeksEditable(ss, monday);
+  refreshFlyproSheet(ss, [addDays(monday, -7), monday]);
   Logger.log('Ordering sheets...');
   orderSheets(ss);
   Logger.log('Sheet ordering complete.');
@@ -333,8 +336,8 @@ function parseWeek(sh, monday) {
       index: d,
       name: L.dayName[d],
       date: addDays(monday, d),
-      availability: str(values[L.rowAvail - 1][c]),
-      dutyOverride: str(values[L.rowDuty - 1][c]),
+      // Row 3 is a manual duty-student selection. Do not infer or replace it.
+      duty: str(values[L.rowDuty - 1][c]),
       flying: [],
       reserves: [],
       mt: [],
@@ -399,49 +402,37 @@ function isNoise(v) {
 
 function str(v) { return v === null || v === undefined ? '' : String(v).trim(); }
 
-
 // ============================================================ DUTY STUDENT
 
 /**
- * Pick a duty student for each day: anyone flying AEF, otherwise anyone flying.
- * Avoids using the same person twice in a week where there is a choice.
- * A surname typed into the override row always wins.
+ * Select a random published participant for each day that has flying or a
+ * reserve. A value already entered in row 3 remains a manual override.
  */
 function assignDutyStudents(sh, week) {
-  var used = {};
+  var assignments = [];
 
-  week.days.forEach(function (day) {
-    if (day.dutyOverride) { day.duty = day.dutyOverride; return; }
+  week.days.forEach(function (day, d) {
+    if (day.duty) return;
 
-    var aef = day.flying.filter(function (f) { return /aef/i.test(f.sortie); });
-    var pool = aef.length ? aef : day.flying;
+    var participants = day.flying.concat(day.reserves);
+    if (!participants.length) return;
 
-    if (!pool.length) { day.duty = ''; return; }
-
-    var fresh = pool.filter(function (p) { return !used[p.surname.toLowerCase()]; });
-    var pick = (fresh.length ? fresh : pool)[0];
-
+    var pick = participants[Math.floor(Math.random() * participants.length)];
     day.duty = pick.surname;
-    used[pick.surname.toLowerCase()] = true;
+    assignments.push({ day: d, surname: day.duty });
   });
 
-  // The duty row inherits the availability dropdown from the row above when a new
-  // week is created, which would reject a surname. Strip it before writing.
-  sh.getRange(L.rowDuty, 2, 1, 21).clearDataValidations();
+  if (!assignments.length) return;
 
-  // the duty row inherits white bold text from the availability row above it,
-  // which makes anything written here invisible
-  sh.getRange(L.rowDuty, 2, 1, 21)
+  // The duty row inherits the availability dropdown from the row above when a
+  // new week is created, which would reject a surname. Strip it before writing.
+  sh.getRange(L.rowDuty, 2, 1, 21).clearDataValidations()
     .setFontColor('#000000').setFontWeight('bold').setBackground('#ffffff');
-
-  // write the choices back into row 3 so they are visible before you send
-  week.days.forEach(function (day, d) {
-    if (day.dutyOverride) return;
-    sh.getRange(L.rowDuty, L.dayCol[d]).setValue(day.duty);
+  assignments.forEach(function (assignment) {
+    sh.getRange(L.rowDuty, L.dayCol[assignment.day]).setValue(assignment.surname);
   });
   SpreadsheetApp.flush();
 }
-
 
 // ============================================================ PRE-FLIGHT CHECKS
 
@@ -456,10 +447,10 @@ function preflightFor(week, scope) {
   var checkAccom = all || scope === 'ACCOM';
   var w = [];
   week.days.forEach(function (day) {
-    var noFly = /no flying/i.test(day.availability);
+    var noFly = !day.flying.length && !day.reserves.length;
 
-    if (checkFlypro && !noFly && day.flying.length && !day.duty) {
-      w.push(day.name + ': people flying but no duty student could be chosen');
+    if (checkFlypro && !noFly && !day.duty) {
+      w.push(day.name + ': flying or reserve participants but no duty student was assigned');
     }
     if (checkAccom) {
       day.accom.forEach(function (a) {
@@ -508,7 +499,7 @@ function flyproHtml(week) {
   var rows = weekdays.map(function (day) {
     // reserves are just another sortie type — everyone who bid gets published
     var all = day.flying.concat(day.reserves);
-    var noFly = /no flying/i.test(day.availability) || !all.length;
+    var noFly = !all.length;
 
     // group by sortie type, AEF last so it is clearly separated
     var groups = {}, order = [];
@@ -537,8 +528,8 @@ function flyproHtml(week) {
     return '<tr>' +
       '<td class="day">' + day.name.substring(0, 3).toUpperCase() + '</td>' +
       '<td class="c">' + (noFly ? '&nbsp;' : CONFIG.MET_TIME) + '</td>' +
-      '<td>' + sorties + '</td>' +
       '<td class="c">' + (noFly ? '&nbsp;' : esc(day.duty || '')) + '</td>' +
+      '<td>' + sorties + '</td>' +
       '<td>' + mt + '</td>' +
       '</tr>';
   }).join('');
@@ -549,8 +540,8 @@ function flyproHtml(week) {
       '<thead><tr>' +
         '<th style="width:7%">Days</th>' +
         '<th style="width:8%">MET</th>' +
-        '<th style="width:37%">Sorties</th>' +
         '<th style="width:14%">Duty Student</th>' +
+        '<th style="width:37%">Sorties</th>' +
         '<th style="width:34%">MT</th>' +
       '</tr></thead><tbody>' + rows + '</tbody></table>' +
     '<p class="sig">Flying Programme Authority:&nbsp;&nbsp; Name: ______________________ &nbsp;&nbsp;' +
@@ -629,6 +620,42 @@ function accomEmailBody(week) {
   return out.join('\n');
 }
 
+/** Send reviewers the generated document links and the accommodation draft text. */
+function notifyFlyproReady(week, flypro, mt) {
+  if (CONFIG.TEST_MODE) {
+    Logger.log('Flypro ready notification skipped in test mode.');
+    return;
+  }
+  if (!CONFIG.READY_TO) {
+    Logger.log('Flypro ready notification skipped: no READY_TO recipient set.');
+    return;
+  }
+
+  var weekText = prettyDate(week.monday);
+  var accom = accomEmailBody(week);
+  var plain = 'Flypro is ready for review for the week commencing ' + weekText +
+              '. The Flypro, MT, and accommodation distribution emails have ' +
+              'been saved as drafts.\n\n' +
+              'Flypro PDF: ' + flypro.getUrl() + '\n' +
+              'MT PDF: ' + mt.getUrl() + '\n\n' +
+              'Accommodation email draft:\n\n' + accom;
+  var html = '<div style="font-family:Arial,sans-serif;font-size:11pt">' +
+             '<p>Flypro is ready for review for the week commencing ' + esc(weekText) +
+             '. The Flypro, MT, and accommodation distribution emails have been ' +
+             'saved as drafts.</p>' +
+             '<p><a href="' + esc(flypro.getUrl()) + '">Open Flypro PDF</a><br>' +
+             '<a href="' + esc(mt.getUrl()) + '">Open MT PDF</a></p>' +
+             '<p><b>Accommodation email draft</b></p>' +
+             '<pre style="font-family:Arial,sans-serif;white-space:pre-wrap">' +
+             esc(accom) + '</pre></div>';
+
+  GmailApp.sendEmail(CONFIG.READY_TO,
+                     CONFIG.READY_SUBJECT.replace('{week}', weekText),
+                     plain,
+                     { name: 'OUAS Flypro', htmlBody: html });
+  Logger.log('Flypro ready notification sent to ' + CONFIG.READY_TO + '.');
+}
+
 /** Uses a friendly greeting appropriate to the time the email is created. */
 function emailGreeting() {
   var hour = Number(Utilities.formatDate(new Date(), CONFIG.TIMEZONE, 'H'));
@@ -657,13 +684,8 @@ function deliver(subject, body, files, realTo, label) {
   var prefix = CONFIG.TEST_MODE ? '[TEST] ' : '';
   var full = prefix + subject;
 
-  if (CONFIG.SEND_MODE === 'SEND') {
-    GmailApp.sendEmail(to, full, body, opts);
-    Logger.log(label + ': sent to ' + to);
-  } else {
-    GmailApp.createDraft(to, full, body, opts);
-    Logger.log(label + ': draft created for ' + to);
-  }
+  GmailApp.createDraft(to, full, body, opts);
+  Logger.log(label + ': draft created for ' + to);
 }
 
 /**
@@ -732,33 +754,39 @@ function signatureHtml() {
 
 // ============================================================ THE FLYPRO TAB
 /**
- * Rebuild the FLYPRO tab from the remaining week tabs. On Sunday the previous
- * week has been hidden, so the upcoming week is left on the summary tab.
+ * Rebuild the FLYPRO tab from one or more week tabs. Thursday shows the current
+ * and coming weeks together; Sunday leaves only the week starting next.
  */
-function refreshFlyproSheet(ss, currentMonday) {
+function refreshFlyproSheet(ss, mondays) {
   var sh = ss.getSheetByName('FLYPRO');
   if (!sh) sh = ss.insertSheet('FLYPRO');
 
   sh.clear();
   sh.getImages().forEach(function (img) { img.remove(); });   // old pasted screenshots
   sh.setHiddenGridlines(true);
-  [90, 70, 300, 130, 300].forEach(function (w, i) { sh.setColumnWidth(i + 1, w); });
+  [90, 70, 130, 300, 300].forEach(function (w, i) { sh.setColumnWidth(i + 1, w); });
 
-  var tab = ss.getSheetByName(weekTabName(currentMonday));
-  if (!tab) {
-    Logger.log('No upcoming week tab found for ' + weekTabName(currentMonday) + '.');
-    return;
-  }
-  if (!isNewFormat(tab)) {
-    Logger.log('Skipping ' + tab.getName() + ' — old 2-column layout.');
-    return;
-  }
+  var weeks = Array.isArray(mondays) ? mondays : [mondays];
+  var top = 1;
+  var rendered = 0;
 
-  var wk = parseWeek(tab, currentMonday);
-  wk.days.forEach(function (d) { d.duty = d.dutyOverride; });
-  drawProgramme(sh, 1, wk, '');
+  weeks.forEach(function (monday, index) {
+    var tab = ss.getSheetByName(weekTabName(monday));
+    if (!tab) {
+      Logger.log('No week tab found for ' + weekTabName(monday) + '.');
+      return;
+    }
+    if (!isNewFormat(tab)) {
+      Logger.log('Skipping ' + tab.getName() + ' — old 2-column layout.');
+      return;
+    }
 
-  Logger.log('FLYPRO tab rebuilt.');
+    var heading = weeks.length > 1 && index === 1 ? 'NEXT WEEK' : 'THIS WEEK';
+    top = drawProgramme(sh, top, parseWeek(tab, monday), '', heading) + 2;
+    rendered++;
+  });
+
+  Logger.log(rendered ? 'FLYPRO tab rebuilt.' : 'No valid week tabs found for FLYPRO.');
 }
 
 /**
@@ -773,8 +801,8 @@ function isNewFormat(sh) {
 }
 
 /** Draw one week's programme onto the FLYPRO tab. Returns the last row used. */
-function drawProgramme(sh, top, week, pdfUrl) {
-  var title = 'THIS WEEK — OUAS FLYING PROGRAMME: ' + weekRangeLabel(week.monday);
+function drawProgramme(sh, top, week, pdfUrl, heading) {
+  var title = (heading || 'THIS WEEK') + ' — OUAS FLYING PROGRAMME: ' + weekRangeLabel(week.monday);
 
   sh.getRange(top, 1, 1, 5).merge().setValue(title)
     .setBackground('#1f3864')
@@ -784,13 +812,13 @@ function drawProgramme(sh, top, week, pdfUrl) {
 
   var head = top + 1;
   sh.getRange(head, 1, 1, 5)
-    .setValues([['Days', 'MET', 'Sorties', 'Duty Student', 'MT']])
+    .setValues([['Days', 'MET', 'Duty Student', 'Sorties', 'MT']])
     .setBackground('#d9e2f3').setFontWeight('bold')
     .setHorizontalAlignment('center');
 
   var rows = week.days.slice(0, 5).map(function (day) {
     var all = day.flying.concat(day.reserves);
-    var noFly = /no flying/i.test(day.availability) || !all.length;
+    var noFly = !all.length;
 
     var groups = {}, order = [];
     all.forEach(function (f) {
@@ -812,8 +840,8 @@ function drawProgramme(sh, top, week, pdfUrl) {
 
     return [day.name.substring(0, 3).toUpperCase(),
             noFly ? '' : CONFIG.MET_TIME,
-            sorties,
             noFly ? '' : (day.duty || ''),
+            sorties,
             mt];
   });
 
@@ -823,7 +851,7 @@ function drawProgramme(sh, top, week, pdfUrl) {
   sh.getRange(first, 1, rows.length, 5).setValues(rows)
     .setVerticalAlignment('top').setWrap(true);
   sh.getRange(first, 1, rows.length, 2).setHorizontalAlignment('center');
-  sh.getRange(first, 4, rows.length, 1).setHorizontalAlignment('center');
+  sh.getRange(first, 3, rows.length, 1).setHorizontalAlignment('center');
   sh.autoResizeRows(first, rows.length);
 
   var last = first + rows.length - 1;
@@ -884,7 +912,7 @@ function fridayRunCore() {
   Logger.log('Link confirmed on ' + tab + ', previous week cleared.');
 }
 
-/** Hide the finished week tab while keeping it recoverable in this spreadsheet. */
+/** Hide the week that has ended while keeping it recoverable in this spreadsheet. */
 function sundayRun() {
   try {
     return sundayRunCore();
@@ -896,22 +924,38 @@ function sundayRun() {
 
 function sundayRunCore() {
   var ss = SpreadsheetApp.getActiveSpreadsheet();
-  var tab = PropertiesService.getDocumentProperties().getProperty('lastWeekTab');
+  var props = PropertiesService.getDocumentProperties();
+  var tab = props.getProperty('weekToHideTab');
+
+  // Lets this corrected Sunday behaviour work after a Thursday run that
+  // completed before this version of the script was installed.
+  if (!tab && props.getProperty('lastWeekTab')) {
+    tab = weekTabName(addDays(nextMonday(), -7));
+  }
   if (!tab) { Logger.log('Nothing to hide.'); return; }
+  if (props.getProperty('lastSundayHiddenTab') === tab) {
+    Logger.log(tab + ' was already hidden by the Sunday cleanup.');
+    return;
+  }
 
   var sh = ss.getSheetByName(tab);
   if (!sh) { Logger.log('Tab ' + tab + ' already gone.'); return; }
 
   var flypro = ss.getSheetByName('FLYPRO');
   if (flypro) flypro.activate();
-  sh.hideSheet();
-  Logger.log('Hid completed week tab ' + tab + '.');
+  if (!sh.isSheetHidden()) {
+    sh.hideSheet();
+    Logger.log('Hid ended week tab ' + tab + '.');
+  }
 
-  // Rebuild FLYPRO — the completed week is hidden, so the upcoming week remains
+  // Rebuild FLYPRO for the week that begins the following Monday.
   refreshFlyproSheet(ss, nextMonday());
   Logger.log('Ordering sheets...');
   orderSheets(ss);
   Logger.log('Sheet ordering complete.');
+
+  props.setProperty('lastSundayHiddenTab', tab);
+  props.deleteProperty('weekToHideTab');
 }
 
 
@@ -996,18 +1040,46 @@ function lockSheet(sh) {
   Logger.log('Locked ' + sh.getName());
 }
 
+/** Ensure the two weeks after the published week are visible and editable. */
+function ensureFutureWeeksEditable(ss, publishedMonday) {
+  ensureWeekEditable(ss, addDays(publishedMonday, 7));
+  ensureWeekEditable(ss, addDays(publishedMonday, 14));
+}
+
+function ensureWeekEditable(ss, monday) {
+  var sh = rollTemplateForward(ss, monday);
+  if (!sh) {
+    throw new Error('Could not create or find ' + weekTabName(monday) + '.');
+  }
+
+  if (sh.isSheetHidden()) {
+    sh.showSheet();
+    Logger.log('Made future week tab visible: ' + sh.getName());
+  }
+
+  var protections = sh.getProtections(SpreadsheetApp.ProtectionType.SHEET);
+  if (protections.length) {
+    protections.forEach(function (protection) { protection.remove(); });
+    Logger.log('Unlocked future week tab ' + sh.getName() + '.');
+  }
+  return sh;
+}
+
 function rollTemplateForward(ss, monday) {
   var name = weekTabName(monday);
-  if (ss.getSheetByName(name)) { Logger.log(name + ' already exists.'); return; }
+  var existing = ss.getSheetByName(name);
+  if (existing) { Logger.log(name + ' already exists.'); return existing; }
 
   var tpl = ss.getSheetByName(CONFIG.TEMPLATE_TAB);
-  if (!tpl) { Logger.log('Template tab not found.'); return; }
+  if (!tpl) { Logger.log('Template tab not found.'); return null; }
 
   var copy = tpl.copyTo(ss).setName(name);
-  copy.getRange(L.rowDuty, 2, 1, 21).clearDataValidations();
+  copy.getRange(L.rowDuty, 2, 1, 21).clearDataValidations()
+    .setFontColor('#000000').setFontWeight('bold').setBackground('#ffffff');
   ss.setActiveSheet(copy);
   ss.moveActiveSheet(indexOfTemplate(ss) + 1);
   Logger.log('Created ' + name);
+  return copy;
 }
 
 function indexOfTemplate(ss) {
